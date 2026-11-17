@@ -4,8 +4,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Event QR Check-in</title>
+<title>Event Check-in</title>
+
 <script src="https://unpkg.com/html5-qrcode"></script>
+
 <style>
 body {
   font-family: Arial, sans-serif;
@@ -40,24 +42,38 @@ button {
   margin-top: 20px;
   padding: 18px;
   border-radius: 12px;
-  line-height: 1.7;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
 }
 .success { background: #dcfce7; color: #166534; }
 .error { background: #fee2e2; color: #991b1b; }
 .info { background: #fef3c7; color: #92400e; }
 </style>
 </head>
+
 <body>
 <div class="container">
   <h1>📷 Event Check-in</h1>
   <p>ระบบสแกน QR Code สำหรับเจ้าหน้าที่</p>
+
   <div id="reader"></div>
-  <button class="start" onclick="startScanner()">เปิดกล้องเพื่อสแกน</button>
-  <button class="stop" onclick="stopScanner()">ปิดกล้อง</button>
+
+  <button class="start" onclick="startScanner()">
+    เปิดกล้องเพื่อสแกน
+  </button>
+
+  <button class="stop" onclick="stopScanner()">
+    ปิดกล้อง
+  </button>
+
   <div id="result"></div>
 </div>
 
 <script>
+
+// 1. ใส่ Web App URL ของ Google Apps Script
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwcHTpb_zYGBXgC_DUopw9wEYVdl0xUNxFnZ-zzGDU6USlQsUl_CSehRTly1tDvho9EaQ/exec';
+
 let scanner = null;
 let processing = false;
 
@@ -68,59 +84,148 @@ function showResult(message, type) {
   box.style.display = 'block';
 }
 
+// 2. เริ่มกล้อง
 async function startScanner() {
   if (scanner || processing) return;
 
-  if (!window.Html5Qrcode) {
-    showResult('โหลดระบบสแกนไม่สำเร็จ กรุณารีเฟรชหน้าเว็บ', 'error');
-    return;
-  }
-
-  scanner = new Html5Qrcode('reader');
-
   try {
+    scanner = new Html5Qrcode('reader');
+
     await scanner.start(
       { facingMode: 'environment' },
-      { fps: 10, qrbox: { width: 250, height: 250 } },
+      {
+        fps: 10,
+        qrbox: { width: 250, height: 250 }
+      },
       onScanSuccess
     );
+
     showResult('พร้อมสแกน QR Code', 'info');
+
   } catch (error) {
     scanner = null;
-    showResult('เปิดกล้องไม่ได้ กรุณาตรวจสอบสิทธิ์กล้อง', 'error');
+    showResult('เปิดกล้องไม่ได้: ' + error.message, 'error');
   }
 }
 
+// 3. ปิดกล้อง
 async function stopScanner() {
-  if (scanner) {
-    const current = scanner;
-    scanner = null;
-    try {
-      await current.stop();
-      await current.clear();
-    } catch (error) {
-      console.log(error);
-    }
+  if (!scanner) return;
+
+  const current = scanner;
+  scanner = null;
+
+  try {
+    await current.stop();
+    await current.clear();
+  } catch (error) {
+    console.log(error);
   }
 }
 
+// 4. ส่ง Registration ID ไปตรวจสอบ
+function sendCheckIn(id) {
+
+  return new Promise((resolve, reject) => {
+
+    const callbackName =
+      'checkinCallback' + Date.now() +
+      Math.floor(Math.random() * 10000);
+
+    const script = document.createElement('script');
+
+    let completed = false;
+
+    function cleanup() {
+      clearTimeout(timer);
+      script.remove();
+      delete window[callbackName];
+    }
+
+    const timer = setTimeout(() => {
+      if (completed) return;
+      completed = true;
+      cleanup();
+      reject(new Error('หมดเวลารอการตอบกลับ กรุณาลองใหม่'));
+    }, 20000);
+
+    window[callbackName] = function(response) {
+      if (completed) return;
+      completed = true;
+      cleanup();
+      resolve(response);
+    };
+
+    script.onerror = function() {
+      if (completed) return;
+      completed = true;
+      cleanup();
+      reject(new Error('เชื่อมต่อ Google Apps Script ไม่สำเร็จ'));
+    };
+
+    const params = new URLSearchParams({
+      action: 'checkin',
+      id: id,
+      callback: callbackName
+    });
+
+    script.src = SCRIPT_URL + '?' + params.toString();
+
+    document.body.appendChild(script);
+  });
+}
+
+// 5. เมื่อสแกนสำเร็จ
 async function onScanSuccess(decodedText) {
+
   if (processing) return;
 
   processing = true;
+
   await stopScanner();
 
   const id = decodedText.trim();
 
   if (!/^REG-[A-Za-z0-9-]+$/.test(id)) {
-    showResult('QR Code ไม่ใช่ Registration ID ที่ถูกต้อง', 'error');
+    showResult('QR Code ไม่ถูกต้อง', 'error');
     processing = false;
     return;
   }
 
-  showResult('อ่าน QR Code สำเร็จ: ' + id, 'success');
+  showResult('กำลังตรวจสอบข้อมูล...', 'info');
+
+  try {
+
+    const response = await sendCheckIn(id);
+
+    if (response.success) {
+
+      showResult(
+        '✅ ' + response.message +
+        '\nชื่อ: ' + response.name +
+        '\nรหัส: ' + response.id +
+        '\nเวลา: ' + response.time,
+        'success'
+      );
+
+    } else {
+
+      showResult(
+        '❌ ' + response.message,
+        'error'
+      );
+
+    }
+
+  } catch (error) {
+
+    showResult('เกิดข้อผิดพลาด: ' + error.message, 'error');
+
+  }
+
   processing = false;
 }
+
 </script>
 </body>
 </html>
